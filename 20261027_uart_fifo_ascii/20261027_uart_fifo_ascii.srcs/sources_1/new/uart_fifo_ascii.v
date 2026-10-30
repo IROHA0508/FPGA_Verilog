@@ -44,46 +44,4 @@ module uart_fifo_ascii (
         .status  (status)
     );
 
-    wire w_dist;
-    wire w_btn_r;
-    wire w_enable;
-    wire w_clear;
-    wire w_us_tick;
-
-    btn_debounce U_BTN_DEBOUNCE_R (
-        .clk  (clk),
-        .reset(rst),
-        .i_btn(btn_R),
-        .o_btn(w_btn_r)
-    );
-
-    sr04_controller U_SR04_CNTL (
-        .clk       (clk),
-        .rst       (rst),
-        .echo      (echo),
-        .sr04_start(run_stop || w_btn_r),
-        .trig      (trig),
-        .us_tick   (w_us_tick),
-        .enable    (w_enable),
-        .clear     (w_clear),
-        .distance  (w_dist)
-    );
-
-    sr04_tick_gen U_SR04_TICK_GEN (
-        .clk    (clk),
-        .rst    (rst),
-        .enable (w_enable),
-        .clear  (w_clear),
-        .us_tick(w_us_tick)
-    );
-
-
-    fnd_controller U_FND_CNTL (
-        .clk     (clk),
-        .reset   (rst),
-        .fnd_data(w_dist),
-        .fnd_com (fnd_com),
-        .fnd_font(fnd_font)
-    );
-
 endmodule

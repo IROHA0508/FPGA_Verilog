@@ -40,7 +40,7 @@ module top_sr04 (
         // .clear(w_clear),
         .us_tick(w_us_tick)
     );
-    
+
     fnd_controller U_FND_CNTL (
         .clk     (clk),
         .reset   (rst),
