@@ -178,6 +178,8 @@ module tb_dht11_controller ();
         // 4) checksum이 틀린 경우 (값은 받지만 valid = 0)
         run_test(40'h37_00_18_03_00, 1'b0, "wrong checksum");
 
+        run_test(40'h2D_00_14_05_46, 1'b1, "45%, 20.5C");
+
         $display("\n==============================");
         $display(" PASS %0d / FAIL %0d", pass_cnt, fail_cnt);
         $display("==============================");
