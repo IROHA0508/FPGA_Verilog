@@ -12,4 +12,9 @@ module adder (
     // always @(*) begin
     //     {c, s} = a + b;
     // end
+
+    // always_comb : Combinational Logic <-> always_ff : Sequential Logic
+    // always_comb begin 
+    //     {c,s} = a + b;
+    // end
 endmodule
