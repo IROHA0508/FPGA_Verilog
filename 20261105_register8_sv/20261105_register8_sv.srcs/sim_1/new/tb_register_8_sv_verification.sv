@@ -74,14 +74,14 @@ class driver;
         forever begin
             // sense posedge clk using virtual interface
             // (1) cost 2 cycles
-            // gen2drv_mbox.get(tr);
-            // tr.debug_print("DRV - get");
-            // @(posedge reg_interface_virtual.clk);
-
-            // (2) cost 1 cycle
-            @(posedge reg_interface_virtual.clk);
             gen2drv_mbox.get(tr);
             tr.debug_print("DRV - get");
+            @(posedge reg_interface_virtual.clk);
+
+            // (2) cost 1 cycle
+            // @(posedge reg_interface_virtual.clk);
+            // gen2drv_mbox.get(tr);
+            // tr.debug_print("DRV - get");
             #1;
             tr.debug_print("DRV - after posedge");
             reg_interface_virtual.rst = 0;
