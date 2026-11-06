@@ -82,6 +82,11 @@ class driver;
             // @(posedge reg_interface_virtual.clk);
             // gen2drv_mbox.get(tr);
             // tr.debug_print("DRV - get");
+
+            // using neg edge -> cost 1cycle            
+            @(negedge reg_interface_virtual.clk);
+            gen2drv_mbox.get(tr);
+            tr.debug_print("DRV - get");
             #1;
             tr.debug_print("DRV - after posedge");
             reg_interface_virtual.rst = 0;
