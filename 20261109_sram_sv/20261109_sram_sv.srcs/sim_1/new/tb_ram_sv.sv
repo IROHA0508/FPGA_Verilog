@@ -302,7 +302,7 @@ class monitor;
         forever begin
             @(mon_next_evt);
             @(negedge ram_interface_virtual.clk);
-            tr = new;
+            tr       = new;
             tr.addr  = ram_interface_virtual.addr;
             tr.wdata = ram_interface_virtual.wdata;
             tr.we    = ram_interface_virtual.we;
