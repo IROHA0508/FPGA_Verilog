@@ -19,6 +19,11 @@ class transaction;
 
     rand int unsigned       interval;  // tx start interval
 
+    // error check bit
+    bit                     start_bit_error;
+    bit                     stop_bit_error;
+    bit                     frame_time_error;
+    
     // output
     logic                   tx_busy;
     logic                   tx;
@@ -93,7 +98,7 @@ class driver;
             end
 
             if (!uart_interface_virtual.tx_busy) begin
-                repeat(tr.interval) @(negedge uart_interface_virtual.clk);
+                repeat (tr.interval) @(negedge uart_interface_virtual.clk);
                 uart_interface_virtual.rst      = 0;
                 uart_interface_virtual.tx_start = 1;
                 uart_interface_virtual.tx_data  = tr.tx_data;
@@ -123,19 +128,77 @@ class monitor;
     endfunction
 
     localparam BAUD_TIME = (100_000_000 / 9600) * 10;
+    time start_time;
+    time current_time;
+    time frame_start_time;
+    time frame_end_time;
 
     task uart_receive(output logic [7:0] receive_data);
         // @(posedge uart_interface_virtual.clk);
-        @(negedge uart_interface_virtual.tx);
-        #( BAUD_TIME / 2);
+        // @(negedge uart_interface_virtual.tx);
 
-        for (int i = 0; i < 8; i++) begin
-            #(BAUD_TIME);
-            receive_data[i] = uart_interface_virtual.tx;
+        // start bit error checker
+        @ (!uart_interface_virtual.tx);
+        start_time       = $time;
+        frame_start_time = start_time;
+        current_time     = start_time;
+
+        while ( uart_interface_virtual.tx == 0 && (current_time - start_time) <= BAUD_TIME ) begin
+            @(posedge uart_interface_virtual.clk);
+            current_time = $time;
+        end
+        $display("START BIT TIME : %tns", (current_time - start_time)/1000);
+        if ((current_time - start_time) >= (BAUD_TIME * (15 / 16))) begin
+            tr_out.start_bit_error = 0;
+        end else begin
+            tr_out.start_bit_error = 1;
         end
 
-        #(BAUD_TIME);
-        #(BAUD_TIME / 2);
+        // #(BAUD_TIME / 2);
+
+        // DATA STATE START
+        for (int i = 0; i < 8; i++) begin
+            #(BAUD_TIME / 2);
+            receive_data[i] = uart_interface_virtual.tx;
+            #(BAUD_TIME / 2);
+        end
+        // #(BAUD_TIME);
+        // #(BAUD_TIME / 2);
+
+        // wait before STOP state
+        start_time   = $time;
+        current_time = start_time;
+        while (uart_interface_virtual.tx == 0 && (current_time - start_time) <= BAUD_TIME/2) begin
+            @(posedge uart_interface_virtual.clk);
+            current_time = $time;
+        end
+
+        if ((current_time - start_time) >= (BAUD_TIME / 2)) begin
+            tr_out.stop_bit_error = 1;
+        end else begin
+            // stop bit error checker
+            start_time   = $time;
+            current_time = start_time;
+            while ( uart_interface_virtual.tx == 1 && (current_time - start_time) <= BAUD_TIME && (uart_interface_virtual.tx_busy == 1)) begin
+                @(posedge uart_interface_virtual.clk);
+                current_time = $time;
+            end
+            $display("END BIT TIME : %tns", (current_time - start_time)/1000);
+            if ((current_time - start_time) >= (BAUD_TIME * (15 / 16))) begin
+                tr_out.stop_bit_error = 0;
+            end else begin
+                tr_out.stop_bit_error = 1;
+            end
+        end
+
+        // frame time check
+        frame_end_time = $time;
+        $display("FRAME TIME : %tns", (frame_end_time - frame_start_time)/1000);
+        if ((frame_end_time - frame_start_time >= (BAUD_TIME * 9.5)) && (frame_end_time - frame_start_time <= (BAUD_TIME * 10.5))) begin 
+            tr_out.frame_time_error = 0;
+        end else begin 
+            tr_out.frame_time_error = 1;
+        end
     endtask
 
     task run();
@@ -183,18 +246,33 @@ class scoreboard;
         this.gen_next_evt = gen_next_evt;
     endfunction
 
-    int total_cnt        = 0;
-    int tx_data_pass_cnt = 0;
-    int tx_data_fail_cnt = 0;
+    int total_cnt         = 0;
+    int tx_data_pass_cnt  = 0;
+    int tx_data_fail_cnt  = 0;
+    int tx_start_pass_cnt = 0;
+    int tx_start_fail_cnt = 0;
+    int tx_stop_pass_cnt = 0;
+    int tx_stop_fail_cnt = 0;
+    int tx_frame_pass_cnt = 0;
+    int tx_frame_fail_cnt = 0;
 
     task run();
         forever begin
-            total_cnt++;
             mon2scb_mbox_in.get(tr_in);
-            tr_in.debug_print("SCB - tr in");
+            total_cnt++;
+            tr_in.debug_print("SCB tr in");
 
             mon2scb_mbox_out.get(tr_out);
-            tr_out.debug_print("SCB - tr out");
+            tr_out.debug_print("SCB tr out");
+
+            // TX start bit error check
+            if (tr_out.start_bit_error) begin
+                tx_start_fail_cnt++;
+                $display("START FRAME FAIL");
+            end else begin
+                tx_start_pass_cnt++;
+                $display("START FRAME PASS");
+            end
 
             if (tr_in.tx_data === tr_out.tx_data) begin
                 tx_data_pass_cnt++;
@@ -202,6 +280,24 @@ class scoreboard;
             end else begin
                 tx_data_fail_cnt++;
                 $display("tx_data FAIL");
+            end
+
+            // TX stop bit error check
+            if (tr_out.stop_bit_error) begin
+                tx_stop_fail_cnt++;
+                $display("STOP FRAME FAIL");
+            end else begin
+                tx_stop_pass_cnt++;
+                $display("STOP FRAME PASS");
+            end
+
+            // TX frame bit error check
+            if (tr_out.frame_time_error) begin
+                tx_frame_fail_cnt++;
+                $display("FRAME TIME FAIL");
+            end else begin
+                tx_frame_pass_cnt++;
+                $display("FRAME TIME PASS");
             end
             ->gen_next_evt;
         end
@@ -212,6 +308,12 @@ class scoreboard;
         $display("TOTAL COUNT : %4d", total_cnt);
         $display("TX DATA PASS : %4d", tx_data_pass_cnt);
         $display("TX DATA FAIL : %4d", tx_data_fail_cnt);
+        $display("TX START PASS : %4d", tx_start_pass_cnt);
+        $display("TX START FAIL : %4d", tx_start_fail_cnt);
+        $display("TX STOP PASS : %4d", tx_stop_pass_cnt);
+        $display("TX STOP FAIL : %4d", tx_stop_fail_cnt);
+        $display("TX FRAME PASS : %4d", tx_frame_pass_cnt);
+        $display("TX FRAME FAIL : %4d", tx_frame_fail_cnt);
         $display("=====================================");
     endtask
 endclass
