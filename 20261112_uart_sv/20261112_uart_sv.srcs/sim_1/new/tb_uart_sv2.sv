@@ -1,4 +1,5 @@
 `timescale 1ns / 1ps
+parameter INTERVAL_RANGE = 100_000_000 / (9600 * 100);
 
 // Coverage
 interface uart_interface (
@@ -7,6 +8,7 @@ interface uart_interface (
     logic       rst;
     logic       tx_start;
     logic [7:0] tx_data;
+    logic [31:0] interval;  // TB 전용: driver가 적용한 tx_start 간격 (DUT에는 연결 안 함)
     logic       tx_busy;
     logic       tx;
 endinterface
@@ -23,12 +25,12 @@ class transaction;
     bit                     start_bit_error;
     bit                     stop_bit_error;
     bit                     frame_time_error;
-    
+
     // output
     logic                   tx_busy;
     logic                   tx;
 
-    constraint interval_range {interval < (100_000_000 / 9600);}
+    constraint interval_range {interval < INTERVAL_RANGE;}
 
     function debug_print(string name);
         $display(
@@ -76,6 +78,7 @@ class driver;
     task reset();
         uart_interface_virtual.rst      = 1;
         uart_interface_virtual.tx_data  = 0;
+        uart_interface_virtual.interval = 0;
         uart_interface_virtual.tx_start = 0;
         repeat (2) @(negedge uart_interface_virtual.clk);
         uart_interface_virtual.rst = 0;
@@ -102,6 +105,7 @@ class driver;
                 uart_interface_virtual.rst      = 0;
                 uart_interface_virtual.tx_start = 1;
                 uart_interface_virtual.tx_data  = tr.tx_data;
+                uart_interface_virtual.interval = tr.interval;
 
                 @(negedge uart_interface_virtual.clk);
 
@@ -138,7 +142,7 @@ class monitor;
         // @(negedge uart_interface_virtual.tx);
 
         // start bit error checker
-        @ (!uart_interface_virtual.tx);
+        @(!uart_interface_virtual.tx);
         start_time       = $time;
         frame_start_time = start_time;
         current_time     = start_time;
@@ -147,8 +151,8 @@ class monitor;
             @(posedge uart_interface_virtual.clk);
             current_time = $time;
         end
-        $display("START BIT TIME : %tns", (current_time - start_time)/1000);
-        if ((current_time - start_time) >= (BAUD_TIME * (15 / 16))) begin
+        $display("START BIT TIME : %tns", (current_time - start_time) / 1000);
+        if ((current_time - start_time) >= (BAUD_TIME * 15 / 16)) begin
             tr_out.start_bit_error = 0;
         end else begin
             tr_out.start_bit_error = 1;
@@ -183,8 +187,8 @@ class monitor;
                 @(posedge uart_interface_virtual.clk);
                 current_time = $time;
             end
-            $display("END BIT TIME : %tns", (current_time - start_time)/1000);
-            if ((current_time - start_time) >= (BAUD_TIME * (15 / 16))) begin
+            $display("END BIT TIME : %tns", (current_time - start_time) / 1000);
+            if ((current_time - start_time) >= (BAUD_TIME * 15 / 16)) begin
                 tr_out.stop_bit_error = 0;
             end else begin
                 tr_out.stop_bit_error = 1;
@@ -193,10 +197,11 @@ class monitor;
 
         // frame time check
         frame_end_time = $time;
-        $display("FRAME TIME : %tns", (frame_end_time - frame_start_time)/1000);
-        if ((frame_end_time - frame_start_time >= (BAUD_TIME * 9.5)) && (frame_end_time - frame_start_time <= (BAUD_TIME * 10.5))) begin 
+        $display("FRAME TIME : %tns",
+                 (frame_end_time - frame_start_time) / 1000);
+        if ((frame_end_time - frame_start_time >= (BAUD_TIME * 9.5)) && (frame_end_time - frame_start_time <= (BAUD_TIME * 10.5))) begin
             tr_out.frame_time_error = 0;
-        end else begin 
+        end else begin
             tr_out.frame_time_error = 1;
         end
     endtask
@@ -212,6 +217,7 @@ class monitor;
             // 2. mon2scb_mbox_in put
             tr_in         = new;
             tr_in.tx_data = uart_interface_virtual.tx_data;
+            tr_in.interval = uart_interface_virtual.interval;
             // tr_in.rx       = uart_interface_virtual.rx;
             // tr_in.tx_start = uart_interface_virtual.tx_start;
             // tr_in.tx       = uart_interface_virtual.tx;
@@ -239,11 +245,27 @@ class scoreboard;
     mailbox #(transaction) mon2scb_mbox_in;
     mailbox #(transaction) mon2scb_mbox_out;
 
+    // +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    // COVERAGE  (생성자에서 cg_uart를 쓰므로 생성자보다 먼저 선언)
+    // +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    covergroup cg_uart;
+        cp_interval: coverpoint tr_in.interval {
+            bins full[] = {[0 : INTERVAL_RANGE - 1]};
+        }
+
+        cp_tx_data: coverpoint tr_in.tx_data {
+            bins full[] = {[8'h00 : 8'hFF]};
+            bins corner1 = {8'h55};
+            bins corner2 = {8'hAA};
+        }
+    endgroup
+
     function new(mailbox#(transaction) mon2scb_mbox_in,
                  mailbox#(transaction) mon2scb_mbox_out, event gen_next_evt);
-        this.mon2scb_mbox_in = mon2scb_mbox_in;
+        this.mon2scb_mbox_in  = mon2scb_mbox_in;
         this.mon2scb_mbox_out = mon2scb_mbox_out;
-        this.gen_next_evt = gen_next_evt;
+        this.gen_next_evt     = gen_next_evt;
+        cg_uart               = new;
     endfunction
 
     int total_cnt         = 0;
@@ -251,10 +273,15 @@ class scoreboard;
     int tx_data_fail_cnt  = 0;
     int tx_start_pass_cnt = 0;
     int tx_start_fail_cnt = 0;
-    int tx_stop_pass_cnt = 0;
-    int tx_stop_fail_cnt = 0;
+    int tx_stop_pass_cnt  = 0;
+    int tx_stop_fail_cnt  = 0;
     int tx_frame_pass_cnt = 0;
     int tx_frame_fail_cnt = 0;
+
+    // 카운터 선언 (tx_frame_fail_cnt 아래)
+    int interval0_cnt     = 0;  // interval = 0
+    int data_55_cnt       = 0;  // tx_data = 0x55
+    int data_aa_cnt       = 0;  // tx_data = 0xAA
 
     task run();
         forever begin
@@ -299,22 +326,79 @@ class scoreboard;
                 tx_frame_pass_cnt++;
                 $display("FRAME TIME PASS");
             end
+
+            // run() 안, cg_uart.sample(); 바로 앞
+            if (tr_in.interval === 0)     interval0_cnt++;
+            if (tr_in.tx_data  === 8'h55) data_55_cnt++;
+            if (tr_in.tx_data  === 8'hAA) data_aa_cnt++;
+            cg_uart.sample();  // tr_in(tx_data, interval) 샘플링
+
             ->gen_next_evt;
         end
     endtask
 
-    task report();
-        $display("=====================================");
-        $display("TOTAL COUNT : %4d", total_cnt);
-        $display("TX DATA PASS : %4d", tx_data_pass_cnt);
-        $display("TX DATA FAIL : %4d", tx_data_fail_cnt);
-        $display("TX START PASS : %4d", tx_start_pass_cnt);
-        $display("TX START FAIL : %4d", tx_start_fail_cnt);
-        $display("TX STOP PASS : %4d", tx_stop_pass_cnt);
-        $display("TX STOP FAIL : %4d", tx_stop_fail_cnt);
-        $display("TX FRAME PASS : %4d", tx_frame_pass_cnt);
-        $display("TX FRAME FAIL : %4d", tx_frame_fail_cnt);
-        $display("=====================================");
+    // 한 줄(row) 출력용 helper
+    task automatic print_row(input string name, input int pass_cnt,
+                             input int fail_cnt);
+        int  tot;
+        real rate;
+        tot  = pass_cnt + fail_cnt;
+        rate = (tot == 0) ? 0.0 : (100.0 * pass_cnt) / tot;
+        $display("| %-10s | %6d | %6d | %6d | %6.1f%% | %-4s |", name,
+                 pass_cnt, fail_cnt, tot, rate,
+                 (tot != 0 && fail_cnt == 0) ? "OK" : "NG");
+    endtask
+
+    task automatic report();
+        int    total_fail;
+        int    bnd_miss;
+        string bnd_str;
+
+        total_fail = tx_data_fail_cnt  + tx_start_fail_cnt
+                   + tx_stop_fail_cnt  + tx_frame_fail_cnt;
+        bnd_miss   = (interval0_cnt == 0) + (data_55_cnt == 0)
+                   + (data_aa_cnt == 0);
+        if (bnd_miss == 0) bnd_str = "ALL HIT";
+        else               bnd_str = $sformatf("%0d MISSING", bnd_miss);
+
+        $display("");
+        $display("+--------------------------------------------------------+");
+        $display("|                 TX VERIFICATION REPORT                 |");
+        $display("+--------------------------------------------------------+");
+        $display("| %-10s | %6s | %6s | %6s | %7s | %-4s |", "ITEM", "PASS",
+                 "FAIL", "TOTAL", "RATE", "STAT");
+        $display("+------------+--------+--------+--------+---------+------+");
+        print_row("TX DATA", tx_data_pass_cnt, tx_data_fail_cnt);
+        print_row("TX START", tx_start_pass_cnt, tx_start_fail_cnt);
+        print_row("TX STOP", tx_stop_pass_cnt, tx_stop_fail_cnt);
+        print_row("TX FRAME", tx_frame_pass_cnt, tx_frame_fail_cnt);
+        $display("+------------+--------+--------+--------+---------+------+");
+        $display("| Total transactions : %-33d |", total_cnt);
+        $display(
+            "| Result             : %-33s |",
+            (total_fail == 0 && total_cnt != 0) ? "*** ALL PASSED ***" : "!!! FAILED !!!");
+        $display("+--------------------------------------------------------+");
+        $display("|                    COVERAGE REPORT                     |");
+        $display("+--------------------------------------------------------+");
+        $display("| %-18s : %-33s |", "Cov total",
+                 $sformatf("%5.1f %%", cg_uart.get_coverage()));
+        $display("| %-18s : %-33s |", "Cov interval",
+                 $sformatf("%5.1f %%", cg_uart.cp_interval.get_coverage()));
+        $display("| %-18s : %-33s |", "Cov tx_data",
+                 $sformatf("%5.1f %%", cg_uart.cp_tx_data.get_coverage()));
+        $display("+----------------------------------------+--------+------+");
+        $display("| %-38s | %6s | %-4s |", "BOUNDARY CASE", "HITS", "STAT");
+        $display("+----------------------------------------+--------+------+");
+        $display("| %-38s | %6d | %-4s |", "interval = 0", interval0_cnt,
+                 (interval0_cnt > 0) ? "HIT" : "MISS");
+        $display("| %-38s | %6d | %-4s |", "tx_data = 0x55 (start!=D0, stop!=D7)",
+                 data_55_cnt, (data_55_cnt > 0) ? "HIT" : "MISS");
+        $display("| %-38s | %6d | %-4s |", "tx_data = 0xAA (start==D0, stop==D7)",
+                 data_aa_cnt, (data_aa_cnt > 0) ? "HIT" : "MISS");
+        $display("+----------------------------------------+--------+------+");
+        $display("| %-18s : %-33s |", "Boundary", bnd_str);
+        $display("+--------------------------------------------------------+");
+        $display("");
     endtask
 endclass
 
@@ -375,7 +459,7 @@ module tb_uart_sv ();
 
     initial begin
         env = new(uart_if);
-        env.run(2);
+        env.run(300);
         $finish;
     end
 endmodule
