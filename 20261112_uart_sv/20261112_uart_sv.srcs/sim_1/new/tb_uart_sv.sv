@@ -13,15 +13,15 @@ endinterface
 
 class transaction;
     // input
-    bit            rst;
-    bit            tx_start;
-    rand bit [7:0] tx_data;
+    bit                     rst;
+    bit                     tx_start;
+    rand logic        [7:0] tx_data;
 
-    rand int       interval;  // tx start interval
+    rand int unsigned       interval;  // tx start interval
 
     // output
-    logic          tx_busy;
-    logic          tx;
+    logic                   tx_busy;
+    logic                   tx;
 
     constraint interval_range {interval < (100_000_000 / 9600);}
 
@@ -33,9 +33,9 @@ class transaction;
 endclass
 
 class generator;
-    transaction         tr;
-    event               gen_next_evt;
-    mail #(transaction) gen2drv_mbox;
+    transaction            tr;
+    event                  gen_next_evt;
+    mailbox #(transaction) gen2drv_mbox;
 
     function new(mailbox#(transaction) gen2drv_mbox, event gen_next_evt);
         this.gen2drv_mbox = gen2drv_mbox;
@@ -48,7 +48,8 @@ class generator;
             tr.randomize();
             tr.rst = 0;
             tr.tx_start = 0;
-            gen2drv_mboxput(tr);
+            gen2drv_mbox.put(tr);
+            tr.debug_print("GEN");
             @(gen_next_evt);
         end
     endtask
@@ -67,12 +68,21 @@ class driver;
 
     int busy_check_count = 0;
 
+    task reset();
+        uart_interface_virtual.rst      = 1;
+        uart_interface_virtual.tx_data  = 0;
+        uart_interface_virtual.tx_start = 0;
+        repeat (2) @(negedge uart_interface_virtual.clk);
+        uart_interface_virtual.rst = 0;
+    endtask
+
     task run();
         forever begin
             @(negedge uart_interface_virtual.clk);
             busy_check_count = 0;
             gen2drv_mbox.get(tr);
-            while (!uart_interface_virtual.tx_busy) begin
+
+            while (uart_interface_virtual.tx_busy) begin
                 @(negedge uart_interface_virtual.clk);
                 busy_check_count++;
 
@@ -83,17 +93,16 @@ class driver;
             end
 
             if (!uart_interface_virtual.tx_busy) begin
-                uart_interface_virtual.start   = 1;
-                uart_interface_virtual.rst     = 0;
-                uart_interface_virtual.tx_data = tr.tx_data;
+                repeat(tr.interval) @(negedge uart_interface_virtual.clk);
+                uart_interface_virtual.rst      = 0;
+                uart_interface_virtual.tx_start = 1;
+                uart_interface_virtual.tx_data  = tr.tx_data;
 
                 @(negedge uart_interface_virtual.clk);
-                uart_interface_virtual.start    = 0;
-                uart_interface_virtual.tx_data  = 8'bxx;
 
-                uart_interface_virtual.tx_start = tr.tx_start;
+                uart_interface_virtual.tx_start = 0;
+                uart_interface_virtual.tx_data  = 8'bxx;
             end
-            ->mon_next_evt;
         end
     endtask
 endclass
@@ -113,24 +122,27 @@ class monitor;
         this.uart_interface_virtual = uart_interface_virtual;
     endfunction
 
+    localparam BAUD_TIME = (100_000_000 / 9600) * 10;
+
     task uart_receive(output logic [7:0] receive_data);
-        @(posedge uart_interface_virtual.clk);
-        #((100_000_000 / 9600) / 2);
+        // @(posedge uart_interface_virtual.clk);
+        @(negedge uart_interface_virtual.tx);
+        #( BAUD_TIME / 2);
 
         for (int i = 0; i < 8; i++) begin
+            #(BAUD_TIME);
             receive_data[i] = uart_interface_virtual.tx;
-            #(100_000_000 / 9600);
         end
 
-        #(100_000_000 / 9600);
-        #((100_000_000 / 9600) / 2);
+        #(BAUD_TIME);
+        #(BAUD_TIME / 2);
     endtask
 
     task run();
         forever begin
             // 1. check start == 1
             @(posedge uart_interface_virtual.clk);
-            while (uart_interface_virtual.tx_start) begin
+            while (!uart_interface_virtual.tx_start) begin
                 @(posedge uart_interface_virtual.clk);
             end
 
@@ -141,16 +153,18 @@ class monitor;
             // tr_in.tx_start = uart_interface_virtual.tx_start;
             // tr_in.tx       = uart_interface_virtual.tx;
             // tr_in.tx_busy  = uart_interface_virtual.tx_busy;
-            mon2scb_mbox_in.get(tr_in);
+            mon2scb_mbox_in.put(tr_in);
+            tr_in.debug_print("MON tr_in");
 
             // 3. baud_time * 10 , mon2scb_mbox_out put
             tr_out = new;
             uart_receive(tr_out.tx_data);
-            tr_out.rst      = uart_interface_virtual.rst;
-            tr_out.tx       = uart_interface_virtual.tx;
-            tr_out.tx_busy  = uart_interface_virtual.tx_busy;
+            tr_out.rst     = uart_interface_virtual.rst;
+            tr_out.tx      = uart_interface_virtual.tx;
+            tr_out.tx_busy = uart_interface_virtual.tx_busy;
 
-            mon2scb_mbox_in.get(tr_out);
+            mon2scb_mbox_out.put(tr_out);
+            tr_out.debug_print("MON tr_out");
         end
     endtask
 endclass
@@ -168,6 +182,38 @@ class scoreboard;
         this.mon2scb_mbox_out = mon2scb_mbox_out;
         this.gen_next_evt = gen_next_evt;
     endfunction
+
+    int total_cnt        = 0;
+    int tx_data_pass_cnt = 0;
+    int tx_data_fail_cnt = 0;
+
+    task run();
+        forever begin
+            total_cnt++;
+            mon2scb_mbox_in.get(tr_in);
+            tr_in.debug_print("SCB - tr in");
+
+            mon2scb_mbox_out.get(tr_out);
+            tr_out.debug_print("SCB - tr out");
+
+            if (tr_in.tx_data === tr_out.tx_data) begin
+                tx_data_pass_cnt++;
+                $display("tx_data PASS");
+            end else begin
+                tx_data_fail_cnt++;
+                $display("tx_data FAIL");
+            end
+            ->gen_next_evt;
+        end
+    endtask
+
+    task report();
+        $display("=====================================");
+        $display("TOTAL COUNT : %4d", total_cnt);
+        $display("TX DATA PASS : %4d", tx_data_pass_cnt);
+        $display("TX DATA FAIL : %4d", tx_data_fail_cnt);
+        $display("=====================================");
+    endtask
 endclass
 
 class environment;
@@ -192,6 +238,18 @@ class environment;
         mon = new(mon2scb_mbox_in, mon2scb_mbox_out, uart_interface_virtual);
         scb = new(mon2scb_mbox_in, mon2scb_mbox_out, gen_next_evt);
     endfunction
+
+    task run(int run_count);
+        drv.reset();
+        fork
+            gen.run(run_count);
+            drv.run();
+            mon.run();
+            scb.run();
+        join_any
+        #10;
+        scb.report();
+    endtask
 endclass
 
 module tb_uart_sv ();
@@ -215,6 +273,7 @@ module tb_uart_sv ();
 
     initial begin
         env = new(uart_if);
+        env.run(2);
         $finish;
     end
 endmodule
